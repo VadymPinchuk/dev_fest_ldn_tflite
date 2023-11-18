@@ -10,6 +10,12 @@ This project is supposed to show how to work with Object Detection on live image
 Object detection applies on an image stream from camera (portrait mode only for the showcase
 purpose).
 All expensive and heavy operations are performed in a separate background isolate.
+Flow is explained in the article [Codemagic Blog](https://blog.codemagic.io/live-object-detection-on-image-stream-in-flutter/)
+
+## Flows
+![Image pre processing flow](image_pre_processing_flow.png)
+![Live Detection Flow](live_detection_flow.png)
+
 
 ## How to start
 
