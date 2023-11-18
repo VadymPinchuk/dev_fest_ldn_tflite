@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:dev_fest_2023/models/recognition.dart';
+import 'package:dev_fest_2023/models/screen_params.dart';
 import 'package:dev_fest_2023/service/detector_service.dart';
 import 'package:dev_fest_2023/ui/box_widget.dart';
+import 'package:dev_fest_2023/ui/stats_widget.dart';
 import 'package:flutter/material.dart';
 
 /// [DetectorWidget] sends each frame for inference
@@ -24,7 +26,7 @@ class _DetectorWidgetState extends State<DetectorWidget>
   CameraController? _cameraController;
 
   // use only when initialized, so - not null
-  CameraController get _controller => _cameraController!;
+  get _controller => _cameraController;
 
   /// Object Detector is running on a background [Isolate]. This is nullable
   /// because acquiring a [Detector] is an asynchronous operation. This
@@ -37,8 +39,6 @@ class _DetectorWidgetState extends State<DetectorWidget>
 
   /// Realtime stats
   Map<String, String>? stats;
-
-  /// Controllers
 
   @override
   void initState() {
@@ -55,7 +55,6 @@ class _DetectorWidgetState extends State<DetectorWidget>
       setState(() {
         _detector = instance;
         _subscription = instance.resultsStream.stream.listen((values) {
-          print("DFLDNRESULT: ${values['recognitions']}");
           setState(() {
             results = values['recognitions'];
             stats = values['stats'];
@@ -73,34 +72,15 @@ class _DetectorWidgetState extends State<DetectorWidget>
       cameras[0],
       ResolutionPreset.medium,
       enableAudio: false,
-    );
-    await _cameraController!.initialize();
-    setState(() {});
-    _startImageStream();
-  }
+    )..initialize().then((_) async {
+      await _controller.startImageStream(onLatestImageAvailable);
+      setState(() {});
 
-  void _startImageStream() {
-    _cameraController?.startImageStream(onLatestImageAvailable);
-  }
-
-  /// Callback to receive each frame [CameraImage] perform inference on it
-void onLatestImageAvailable(CameraImage cameraImage) async {
-  _detector?.processFrame(cameraImage);
-}
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) async {
-    switch (state) {
-      case AppLifecycleState.inactive:
-        _cameraController?.stopImageStream();
-        _detector?.stop();
-        _subscription?.cancel();
-        break;
-      case AppLifecycleState.resumed:
-        _initStateAsync();
-        break;
-      default:
-    }
+      /// previewSize is size of each image frame captured by controller
+      ///
+      /// 352x288 on iOS, 240p (320x240) on Android with ResolutionPreset.low
+      ScreenParams.previewSize = _controller.value.previewSize!;
+    });
   }
 
   @override
@@ -118,21 +98,62 @@ void onLatestImageAvailable(CameraImage cameraImage) async {
           aspectRatio: aspect,
           child: CameraPreview(_controller),
         ),
+        // Stats
+        _statsWidget(),
+        // Bounding boxes
         AspectRatio(
           aspectRatio: aspect,
           child: _boundingBoxes(),
-        )
+        ),
       ],
     );
   }
 
-  // Returns Stack of bounding boxes
+  Widget _statsWidget() => (stats != null)
+      ? Align(
+    alignment: Alignment.bottomCenter,
+    child: Container(
+      color: Colors.white.withAlpha(150),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: stats!.entries
+              .map((e) => StatsWidget(e.key, e.value))
+              .toList(),
+        ),
+      ),
+    ),
+  )
+      : const SizedBox.shrink();
+
+  /// Returns Stack of bounding boxes
   Widget _boundingBoxes() {
     if (results == null) {
       return const SizedBox.shrink();
     }
     return Stack(
         children: results!.map((box) => BoxWidget(result: box)).toList());
+  }
+
+  /// Callback to receive each frame [CameraImage] perform inference on it
+  void onLatestImageAvailable(CameraImage cameraImage) async {
+    _detector?.processFrame(cameraImage);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    switch (state) {
+      case AppLifecycleState.inactive:
+        _cameraController?.stopImageStream();
+        _detector?.stop();
+        _subscription?.cancel();
+        break;
+      case AppLifecycleState.resumed:
+        _initStateAsync();
+        break;
+      default:
+    }
   }
 
   @override

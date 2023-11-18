@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:developer';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:dev_fest_2023/models/recognition.dart';
@@ -46,8 +44,8 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 /// [_DetectorService].
 enum _Codes {
   init,
-  ready,
   busy,
+  ready,
   detect,
   result,
 }
@@ -133,13 +131,13 @@ class Detector {
   void _handleCommand(_Command command) {
     switch (command.code) {
       case _Codes.init:
+        _sendPort = command.args?[0] as SendPort;
         // ----------------------------------------------------------------------
         // Before using platform channels and plugins from background isolates we
         // need to register it with its root isolate. This is achieved by
         // acquiring a [RootIsolateToken] which the background isolate uses to
         // invoke [BackgroundIsolateBinaryMessenger.ensureInitialized].
         // ----------------------------------------------------------------------
-        /// This article: [https://medium.com/flutter/introducing-background-isolate-channels-7a299609cad8]
         RootIsolateToken rootIsolateToken = RootIsolateToken.instance!;
         _sendPort.send(_Command(_Codes.init, args: [
           rootIsolateToken,
@@ -174,17 +172,16 @@ class _DetectorService {
 
   /// Result confidence threshold
   static const double confidence = 0.5;
-
   Interpreter? _interpreter;
   List<String>? _labels;
 
   _DetectorService(this._sendPort);
 
-  late final SendPort _sendPort;
+  final SendPort _sendPort;
 
-  /// ----------------------------------------------------------------------
-  /// Here the plugin should be used from the background isolate.
-  /// ----------------------------------------------------------------------
+  // ----------------------------------------------------------------------
+  // Here the plugin is used from the background isolate.
+  // ----------------------------------------------------------------------
 
   /// The main entrypoint for the background isolate sent to [Isolate.spawn].
   static void _run(SendPort sendPort) {
@@ -208,20 +205,19 @@ class _DetectorService {
         // obtained on the root isolate and passed into the background isolate via
         // a [SendPort].
         // ----------------------------------------------------------------------
+        RootIsolateToken rootIsolateToken =
+            command.args?[0] as RootIsolateToken;
         // ----------------------------------------------------------------------
         // [BackgroundIsolateBinaryMessenger.ensureInitialized] for each
         // background isolate that will use plugins. This sets up the
         // [BinaryMessenger] that the Platform Channels will communicate with on
         // the background isolate.
         // ----------------------------------------------------------------------
-        RootIsolateToken rootIsolateToken =
-            command.args?[0] as RootIsolateToken;
         BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
         _interpreter = Interpreter.fromAddress(command.args?[1] as int);
         _labels = command.args?[2] as List<String>;
         _sendPort.send(const _Command(_Codes.ready));
       case _Codes.detect:
-        print('DFLDNRESULT: Detection should start');
         _sendPort.send(const _Command(_Codes.busy));
         _convertCameraImage(command.args?[0] as CameraImage);
       default:
@@ -245,9 +241,7 @@ class _DetectorService {
   }
 
   Map<String, dynamic> analyseImage(
-    image_lib.Image? image,
-    int preConversionTime,
-  ) {
+      image_lib.Image? image, int preConversionTime) {
     var conversionElapsedTime =
         DateTime.now().millisecondsSinceEpoch - preConversionTime;
 
@@ -341,8 +335,6 @@ class _DetectorService {
   List<List<Object>> _runInference(
     List<List<List<num>>> imageMatrix,
   ) {
-    log('Running inference...');
-
     // Set input tensor [1, 300, 300, 3]
     final input = [imageMatrix];
 
