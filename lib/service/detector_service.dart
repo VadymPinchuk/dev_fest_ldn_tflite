@@ -8,6 +8,7 @@ import 'package:camera/camera.dart';
 import 'package:dev_fest_2023/models/recognition.dart';
 import 'package:dev_fest_2023/utils/image_utils.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as image_lib;
 import 'package:tflite_flutter/tflite_flutter.dart';
 
@@ -24,7 +25,7 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 // Here is an example of the protocol they use to communicate:
 //
 //  _________________                         ________________________
-//  [:Detector]                               [:_DetectorServer]
+//  [:Detector]                               [:_DetectorService]
 //  -----------------                         ------------------------
 //         |                                              |
 //         |<---------------(init)------------------------|
@@ -42,16 +43,16 @@ import 'package:tflite_flutter/tflite_flutter.dart';
 ///////////////////////////////////////////////////////////////////////////////
 
 /// All the command codes that can be sent and received between [Detector] and
-/// [_DetectorServer].
+/// [_DetectorService].
 enum _Codes {
   init,
-  busy,
   ready,
+  busy,
   detect,
   result,
 }
 
-/// A command sent between [Detector] and [_DetectorServer].
+/// A command sent between [Detector] and [_DetectorService].
 class _Command {
   const _Command(this.code, {this.args});
 
@@ -65,17 +66,66 @@ class _Command {
 /// are executed in a background isolate.
 /// This class just sends and receives messages to the isolate.
 class Detector {
-  /// TODO: configure detector parts
+  static const String _modelPath = 'assets/models/ssd_mobilenet.tflite';
+  static const String _labelPath = 'assets/models/labelmap.txt';
+
+  Detector._(this._isolate, this._interpreter, this._labels);
+
+  final Isolate _isolate;
+  late final Interpreter _interpreter;
+  late final List<String> _labels;
+
+  // To be used by detector (from UI) to send message to our Service ReceivePort
+  late final SendPort _sendPort;
+
+  bool _isReady = false;
+
+  // // Similarly, StreamControllers are stored in a queue so they can be handled
+  // // asynchronously and serially.
+  final StreamController<Map<String, dynamic>> resultsStream =
+      StreamController<Map<String, dynamic>>();
 
   /// Open the database at [path] and launch the server on a background isolate..
   static Future<Detector> start() async {
-    /// TODO: start detector in separate isolate
-    return Detector();
+    final ReceivePort receivePort = ReceivePort();
+    // sendPort - To be used by service Isolate to send message to our ReceiverPort
+    final Isolate isolate =
+        await Isolate.spawn(_DetectorService._run, receivePort.sendPort);
+
+    final Detector result = Detector._(
+      isolate,
+      await _loadModel(),
+      await _loadLabels(),
+    );
+    receivePort.listen((message) {
+      result._handleCommand(message as _Command);
+    });
+    return result;
+  }
+
+  static Future<Interpreter> _loadModel() async {
+    final interpreterOptions = InterpreterOptions();
+
+    // Use XNNPACK Delegate
+    if (Platform.isAndroid) {
+      interpreterOptions.addDelegate(XNNPackDelegate());
+    }
+
+    return Interpreter.fromAsset(
+      _modelPath,
+      options: interpreterOptions..threads = 4,
+    );
+  }
+
+  static Future<List<String>> _loadLabels() async {
+    return (await rootBundle.loadString(_labelPath)).split('\n');
   }
 
   /// Starts CameraImage processing
   void processFrame(CameraImage cameraImage) {
-    /// TODO: delegate processing to service
+    if (_isReady) {
+      _sendPort.send(_Command(_Codes.detect, args: [cameraImage]));
+    }
   }
 
   /// Handler invoked when a message is received from the port communicating
@@ -83,23 +133,26 @@ class Detector {
   void _handleCommand(_Command command) {
     switch (command.code) {
       case _Codes.init:
-      // ----------------------------------------------------------------------
-      // Before using platform channels and plugins from background isolates we
-      // need to register it with its root isolate. This is achieved by
-      // acquiring a [RootIsolateToken] which the background isolate uses to
-      // invoke [BackgroundIsolateBinaryMessenger.ensureInitialized].
-      // ----------------------------------------------------------------------
-      /// TODO: background isolate init with root isolate token
-      /// This article: [https://medium.com/flutter/introducing-background-isolate-channels-7a299609cad8]
+        // ----------------------------------------------------------------------
+        // Before using platform channels and plugins from background isolates we
+        // need to register it with its root isolate. This is achieved by
+        // acquiring a [RootIsolateToken] which the background isolate uses to
+        // invoke [BackgroundIsolateBinaryMessenger.ensureInitialized].
+        // ----------------------------------------------------------------------
+        /// This article: [https://medium.com/flutter/introducing-background-isolate-channels-7a299609cad8]
+        RootIsolateToken rootIsolateToken = RootIsolateToken.instance!;
+        _sendPort.send(_Command(_Codes.init, args: [
+          rootIsolateToken,
+          _interpreter.address,
+          _labels,
+        ]));
       case _Codes.ready:
-
-      /// TODO: busy state changed to ready
+        _isReady = true;
       case _Codes.busy:
-
-      /// TODO: ready state changed to busy
+        _isReady = false;
       case _Codes.result:
-
-      /// TODO: propagate results to the UI
+        _isReady = true;
+        resultsStream.add(command.args?[0] as Map<String, dynamic>);
       default:
         debugPrint('Detector unrecognized command: ${command.code}');
     }
@@ -107,7 +160,7 @@ class Detector {
 
   /// Kills the background isolate and its detector server.
   void stop() {
-    /// TODO: stop isolate service
+    _isolate.kill();
   }
 }
 
@@ -115,7 +168,7 @@ class Detector {
 ///
 /// This is where we use the new feature Background Isolate Channels, which
 /// allows us to use plugins from background isolates.
-class _DetectorServer {
+class _DetectorService {
   /// Input size of image (height = width = 300)
   static const int mlModelInputSize = 300;
 
@@ -125,9 +178,9 @@ class _DetectorServer {
   Interpreter? _interpreter;
   List<String>? _labels;
 
-  _DetectorServer(this._sendPort);
+  _DetectorService(this._sendPort);
 
-  final SendPort _sendPort;
+  late final SendPort _sendPort;
 
   /// ----------------------------------------------------------------------
   /// Here the plugin should be used from the background isolate.
@@ -136,7 +189,7 @@ class _DetectorServer {
   /// The main entrypoint for the background isolate sent to [Isolate.spawn].
   static void _run(SendPort sendPort) {
     ReceivePort receivePort = ReceivePort();
-    final _DetectorServer server = _DetectorServer(sendPort);
+    final _DetectorService server = _DetectorService(sendPort);
     receivePort.listen((message) async {
       final _Command command = message as _Command;
       await server._handleCommand(command);
@@ -149,22 +202,28 @@ class _DetectorServer {
   Future<void> _handleCommand(_Command command) async {
     switch (command.code) {
       case _Codes.init:
-      // ----------------------------------------------------------------------
-      // The [RootIsolateToken] is required for
-      // [BackgroundIsolateBinaryMessenger.ensureInitialized] and must be
-      // obtained on the root isolate and passed into the background isolate via
-      // a [SendPort].
-      // ----------------------------------------------------------------------
-      // ----------------------------------------------------------------------
-      // [BackgroundIsolateBinaryMessenger.ensureInitialized] for each
-      // background isolate that will use plugins. This sets up the
-      // [BinaryMessenger] that the Platform Channels will communicate with on
-      // the background isolate.
-      // ----------------------------------------------------------------------
-      /// TODO: init service
+        // ----------------------------------------------------------------------
+        // The [RootIsolateToken] is required for
+        // [BackgroundIsolateBinaryMessenger.ensureInitialized] and must be
+        // obtained on the root isolate and passed into the background isolate via
+        // a [SendPort].
+        // ----------------------------------------------------------------------
+        // ----------------------------------------------------------------------
+        // [BackgroundIsolateBinaryMessenger.ensureInitialized] for each
+        // background isolate that will use plugins. This sets up the
+        // [BinaryMessenger] that the Platform Channels will communicate with on
+        // the background isolate.
+        // ----------------------------------------------------------------------
+        RootIsolateToken rootIsolateToken =
+            command.args?[0] as RootIsolateToken;
+        BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
+        _interpreter = Interpreter.fromAddress(command.args?[1] as int);
+        _labels = command.args?[2] as List<String>;
+        _sendPort.send(const _Command(_Codes.ready));
       case _Codes.detect:
-
-      /// What TODO: on detection
+        print('DFLDNRESULT: Detection should start');
+        _sendPort.send(const _Command(_Codes.busy));
+        _convertCameraImage(command.args?[0] as CameraImage);
       default:
         debugPrint('_DetectorService unrecognized command ${command.code}');
     }

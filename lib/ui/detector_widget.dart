@@ -1,4 +1,9 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
+import 'package:dev_fest_2023/models/recognition.dart';
+import 'package:dev_fest_2023/service/detector_service.dart';
+import 'package:dev_fest_2023/ui/box_widget.dart';
 import 'package:flutter/material.dart';
 
 /// [DetectorWidget] sends each frame for inference
@@ -10,8 +15,8 @@ class DetectorWidget extends StatefulWidget {
   State<DetectorWidget> createState() => _DetectorWidgetState();
 }
 
-class _DetectorWidgetState extends State<DetectorWidget> {
-  /// TODO: Listen for Lifecycle and update on pause/resume
+class _DetectorWidgetState extends State<DetectorWidget>
+    with WidgetsBindingObserver {
   /// List of available cameras
   late List<CameraDescription> cameras;
 
@@ -19,16 +24,45 @@ class _DetectorWidgetState extends State<DetectorWidget> {
   CameraController? _cameraController;
 
   // use only when initialized, so - not null
-  get _controller => _cameraController;
+  CameraController get _controller => _cameraController!;
+
+  /// Object Detector is running on a background [Isolate]. This is nullable
+  /// because acquiring a [Detector] is an asynchronous operation. This
+  /// value is `null` until the detector is initialized.
+  Detector? _detector;
+  StreamSubscription? _subscription;
+
+  /// Results to draw bounding boxes
+  List<Recognition>? results;
+
+  /// Realtime stats
+  Map<String, String>? stats;
 
   /// Controllers
 
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
+    WidgetsBinding.instance.addObserver(this);
+    _initStateAsync();
+  }
 
-    /// TODO: Init detector
+  void _initStateAsync() async {
+    // initialize preview and CameraImage stream
+    _initializeCamera();
+    // Spawn a new isolate
+    Detector.start().then((instance) {
+      setState(() {
+        _detector = instance;
+        _subscription = instance.resultsStream.stream.listen((values) {
+          print("DFLDNRESULT: ${values['recognitions']}");
+          setState(() {
+            results = values['recognitions'];
+            stats = values['stats'];
+          });
+        });
+      });
+    });
   }
 
   /// Initializes the camera by setting [_cameraController]
@@ -42,8 +76,31 @@ class _DetectorWidgetState extends State<DetectorWidget> {
     );
     await _cameraController!.initialize();
     setState(() {});
+    _startImageStream();
+  }
 
-    /// TODO: start stream of CameraImages
+  void _startImageStream() {
+    _cameraController?.startImageStream(onLatestImageAvailable);
+  }
+
+  /// Callback to receive each frame [CameraImage] perform inference on it
+void onLatestImageAvailable(CameraImage cameraImage) async {
+  _detector?.processFrame(cameraImage);
+}
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) async {
+    switch (state) {
+      case AppLifecycleState.inactive:
+        _cameraController?.stopImageStream();
+        _detector?.stop();
+        _subscription?.cancel();
+        break;
+      case AppLifecycleState.resumed:
+        _initStateAsync();
+        break;
+      default:
+    }
   }
 
   @override
@@ -61,17 +118,29 @@ class _DetectorWidgetState extends State<DetectorWidget> {
           aspectRatio: aspect,
           child: CameraPreview(_controller),
         ),
-
-        /// TODO: UI for beauty
+        AspectRatio(
+          aspectRatio: aspect,
+          child: _boundingBoxes(),
+        )
       ],
     );
   }
 
+  // Returns Stack of bounding boxes
+  Widget _boundingBoxes() {
+    if (results == null) {
+      return const SizedBox.shrink();
+    }
+    return Stack(
+        children: results!.map((box) => BoxWidget(result: box)).toList());
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
-
-    /// TODO: dispose and lifecycle updates unsub
+    _detector?.stop();
+    _subscription?.cancel();
     super.dispose();
   }
 }
